@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Oaklands Toastmasters — Agenda Builder</title>
+<title>Toastmasters Agenda Builder</title>
 <style>
   /* One point of the A4 page (595 x 842 pt) so every size below can be written
      in the same points the app's agenda PDF uses. */
@@ -202,7 +202,7 @@
 <body>
 
 <div class="toolbar noprint">
-  <h1>Oaklands Toastmasters — Agenda Builder</h1>
+  <h1>Toastmasters Agenda Builder</h1>
   <span class="spacer"></span>
   <span class="status" id="status"></span>
   <button id="print" class="primary">Print / Save PDF</button>
@@ -246,7 +246,8 @@ const ROLE_CATALOGUE = [
   { name: "Speaker Introduction",             green: 30,  yellow: 45,  red: 60  },
   { name: "Speaker",                          green: 300, yellow: 360, red: 420 },
   { name: "Table Topics Master",              green: 60,  yellow: 90,  red: 120 },
-  { name: "Break",                            green: 600, yellow: 660, red: 720, unmanned: true },
+  // The break is timed by its end, not by signals — hence * for green and yellow.
+  { name: "Break",                            green: null, yellow: null, red: 720, unmanned: true },
   { name: "Speaker Evaluation",               green: 120, yellow: 150, red: 180 },
   { name: "Table Topics Evaluator",           green: 120, yellow: 150, red: 180 },
   { name: "Ah-Counter",                       green: 30,  yellow: 60,  red: 90  },
@@ -293,10 +294,36 @@ function parseTime(text) {
   return isNaN(number) ? null : Math.round(number * 60);
 }
 
-/** 90 → "1:30". */
+/**
+ * Reads one of the green/yellow/red cells. A time can be three things:
+ *   "1:30" → 90        a signal time
+ *   "*"    → null      no signal at all (the role doesn't use this light)
+ *   ""     → undefined nothing given, so the club default for the role applies
+ */
+function parseTimeCell(text) {
+  const value = (text || "").trim();
+  if (!value) return undefined;
+  if (/^[*-]+$/.test(value)) return null;
+  return parseTime(value);
+}
+
+/** A cell's value, falling back to the role's default (which may itself be `*`). */
+function timeOr(cell, fallback) {
+  const parsed = parseTimeCell(cell);
+  if (parsed !== undefined) return parsed;
+  return fallback === undefined ? 0 : fallback;
+}
+
+/** 90 → "1:30", and a role with no time for that light → "*" (raw details only). */
 function formatTime(seconds) {
+  if (seconds === null) return "*";
   const total = Math.max(0, Math.round(seconds || 0));
   return Math.floor(total / 60) + ":" + String(total % 60).padStart(2, "0");
+}
+
+/** As printed on the agenda, where a starred time is simply left blank. */
+function printedTime(seconds) {
+  return seconds === null ? "" : formatTime(seconds);
 }
 
 /** 19h15 → "7:15" (12-hour, no suffix — as the printed agenda shows it). */
@@ -479,9 +506,9 @@ function parseRoleLine(cells) {
   return {
     label,
     member: unmanned ? "" : memberField,
-    green: parseTime(parts[2]) ?? role.green ?? 0,
-    yellow: parseTime(parts[3]) ?? role.yellow ?? 0,
-    red: parseTime(parts[4]) ?? role.red ?? 0,
+    green: timeOr(parts[2], role.green),
+    yellow: timeOr(parts[3], role.yellow),
+    red: timeOr(parts[4], role.red),
     unmanned
   };
 }
@@ -576,9 +603,18 @@ function serialise(list) {
 // ------------------------------------------------------------------- agenda maths
 
 /**
- * Start time for each row: the meeting start, advanced by each role's red time,
+ * How long a role holds the floor: its longest signal time, usually red. A role
+ * whose times are all "*" takes no time at all, so the next one starts with it —
+ * useful for a line that's announced rather than timed.
+ */
+function roleDuration(row) {
+  const times = [row.green, row.yellow, row.red].filter(time => typeof time === "number");
+  return times.length ? Math.max(...times) : 0;
+}
+
+/**
+ * Start time for each row: the meeting start, advanced by each role's duration,
  * plus a minute of breathing room for every completed 10 minutes of content.
- * Mirrors MeetingAgendaReport.build.
  */
 function startTimes(rows, startSeconds) {
   let clock = startSeconds;
@@ -586,8 +622,9 @@ function startTimes(rows, startSeconds) {
   let buffers = 0;
   return rows.map(row => {
     const start = clock;
-    clock += row.red;
-    elapsed += row.red;
+    const duration = roleDuration(row);
+    clock += duration;
+    elapsed += duration;
     const due = Math.floor(elapsed / 600);
     if (due > buffers) {
       clock += (due - buffers) * 60;
@@ -674,9 +711,9 @@ function renderPage(meeting) {
       [clockString(starts[index]), ""],
       [row.label, ""],
       [row.unmanned ? "" : row.member, ""],
-      [formatTime(row.green), "c"],
-      [formatTime(row.yellow), "c"],
-      [formatTime(row.red), "c"]
+      [printedTime(row.green), "c"],
+      [printedTime(row.yellow), "c"],
+      [printedTime(row.red), "c"]
     ];
     for (const [text, extra] of cells) {
       grid.append(el("div", { className: "cell " + extra + shade }, text));
@@ -734,7 +771,7 @@ Speaker #1                      | Sam Okafor     |  5:00 |  6:00 |  7:00
 Speaker Introduction #2         | Noah Bennett   |  0:30 |  0:45 |  1:00
 Speaker #2                      | Riley Chen     |  5:00 |  6:00 |  7:00
 Table Topics Master             | Alex Rivera    |  1:00 |  1:30 |  2:00
-Break                           | *              | 10:00 | 11:00 | 12:00
+Break                           | *              |     * |     * | 12:00
 Toastmaster                     | Jordan Blake   |  1:00 |  1:30 |  2:00
 Speaker Evaluation #1           | Casey Nolan    |  2:00 |  2:30 |  3:00
 Speaker Evaluation #2           | Noah Bennett   |  2:00 |  2:30 |  3:00
