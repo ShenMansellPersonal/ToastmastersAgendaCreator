@@ -101,19 +101,63 @@
   .panel-foot p { margin: 0; flex: 1; }
   .panel-foot button { flex: none; }
 
+  /* A4 / Letter switch, left of the page count. */
+  .page-size-switch {
+    display: flex;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .page-size-switch button {
+    border: none;
+    border-radius: 0;
+    padding: 5px 10px;
+    background: #fff;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .page-size-switch button + button { border-left: 1px solid var(--line); }
+  .page-size-switch button.active { background: var(--accent); color: #fff; }
+  .page-size-switch button:not(.active):hover { background: var(--panel); }
+
+  /* Warning shown before printing raw details that were edited but never
+     applied — three explicit choices rather than a plain OK/Cancel confirm. */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+  }
+  .modal-overlay[hidden] { display: none; }
+  .modal {
+    background: #fff;
+    border-radius: 10px;
+    padding: 20px;
+    max-width: 380px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, .35);
+  }
+  .modal p { margin: 0 0 16px; font-size: 13px; line-height: 1.5; color: var(--ink); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+
   /* ---------------- The printable agenda page ---------------- */
 
   #pages { padding: 0 16px 40px; display: flex; flex-direction: column; align-items: center; gap: 20px; }
   #pages .empty { font-size: 13px; color: #6b6b74; padding: 8px 0 24px; text-align: center; }
 
-  /* At its default margins a browser hands you rather less than a full A4 sheet
-     — roughly 185 x 272mm — so the agenda is built to fit inside that rather than
-     bleeding to the paper's edge. It's 523pt wide (the table's own width) and its
-     height comes from the content: sizing it to the whole sheet is what pushed an
-     empty sliver onto a second page. On screen the 36pt padding draws the paper's
-     white border; in print the browser's margins provide it. */
+  /* At its default margins a browser hands you rather less than a full sheet —
+     roughly 185mm wide and, depending on paper size, 245–272mm tall — so the
+     agenda is built to fit inside that rather than bleeding to the paper's edge.
+     It's 523pt wide (the table's own width) and its height comes from the
+     content: sizing it to the whole sheet is what pushed an empty sliver onto a
+     second page. On screen the 36pt padding draws the paper's white border; in
+     print the browser's margins provide it.
+     --sheet-width and --page-body-min are set from JS to match the paper size
+     picked in the toolbar; the values here are the A4 defaults. */
   .page {
-    width: 210mm;
+    width: var(--sheet-width, 210mm);
     height: auto;
     padding: calc(36 * var(--pt));
     background: #fff;
@@ -125,13 +169,14 @@
   }
 
   /* The sized part of the page: the heading, the roles and the no-role/apologies
-     lists. It's 205mm tall whatever the agenda holds, so the no-role and apologies
-     lists finish at the same place every week and the committee below them lands
-     in the same spot. A long agenda grows it rather than being clipped. The
+     lists. It's a fixed height whatever the agenda holds (205mm at A4, less at
+     Letter — see --page-body-min below), so the no-role and apologies lists
+     finish at the same place every week and the committee below them lands in
+     the same spot. A long agenda grows it rather than being clipped. The
      committee sits outside it, so the page's total height stays well inside what
      a printer will give us. */
   .page-body {
-    min-height: 205mm;
+    min-height: var(--page-body-min, 205mm);
     display: flex;
     flex-direction: column;
   }
@@ -207,8 +252,10 @@
   /* ---------------- Print ---------------- */
 
   /* No margin override: the browser's own margins are what frame the agenda, and
-     they're what the page is sized to fit inside. */
-  @page { size: A4; }
+     they're what the page is sized to fit inside. The paper size itself (A4 vs
+     Letter) lives in #pageSizeRule below, rewritten from JS when the toolbar
+     switch changes — @page doesn't take a CSS variable for `size` reliably
+     across browsers, so a dedicated stylesheet is swapped instead. */
 
   @media print {
     body { background: #fff; }
@@ -230,12 +277,18 @@
     .grid .cell.shade { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   }
 </style>
+<!-- Rewritten from JS when the A4/Letter switch changes; see applyPageSize. -->
+<style id="pageSizeRule">@page { size: A4; }</style>
 </head>
 <body>
 
 <div class="toolbar noprint">
   <h1>Toastmasters Agenda Builder</h1>
   <span class="spacer"></span>
+  <div class="page-size-switch" role="group" aria-label="Paper size">
+    <button type="button" class="active" data-size="A4">A4</button>
+    <button type="button" data-size="Letter">Letter</button>
+  </div>
   <span class="status" id="status"></span>
   <button id="print" class="primary">Print / Save PDF</button>
 </div>
@@ -256,6 +309,19 @@
 </div>
 
 <main id="pages"></main>
+
+<div id="printWarning" class="modal-overlay noprint" hidden>
+  <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="printWarningText">
+    <p id="printWarningText">
+      The raw details have changes that haven't been applied, so the agenda below is out of date.
+    </p>
+    <div class="modal-actions">
+      <button type="button" id="printWarnCancel">Cancel</button>
+      <button type="button" id="printWarnOk">OK — print without applying</button>
+      <button type="button" id="printWarnApply" class="primary">Apply &amp; print</button>
+    </div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -310,7 +376,41 @@ const ROLE_KEYS = {
 
 const DEFAULT_START = 19 * 3600 + 15 * 60;   // 7:15 pm
 const STORAGE_KEY = "oaklands-agenda-raw";
+const PAGE_SIZE_KEY = "oaklands-agenda-page-size";
 const PAGE_TITLE = document.title;
+
+/**
+ * Paper sizes the toolbar switch offers. `printBudgetMm` is how much of the
+ * sheet's height a browser leaves printable at its default margins, sized the
+ * same way for both: full sheet height minus ~34mm (the tightest drivers
+ * reserve about 17mm top and bottom). `bodyReserveMm` is how much of that
+ * budget sits below the sized .page-body region (the committee footer plus a
+ * safety margin) — it's constant across paper sizes, so .page-body itself
+ * shrinks for the shorter sheet rather than the reserve changing.
+ */
+const PAGE_SIZES = {
+  A4: { atPageSize: "A4", sheetWidthMm: 210, printBudgetMm: 263 },
+  Letter: { atPageSize: "letter", sheetWidthMm: 215.9, printBudgetMm: 245 }
+};
+const BODY_RESERVE_MM = 58;
+
+let pageSizeKey = "A4";
+
+/** Applies the chosen paper size: the @page rule, the sheet width, and the
+ * fixed height of the roles/notes region — everything downstream (the status
+ * line's budget check) just reads `pageSizeKey`. */
+function applyPageSize(key) {
+  pageSizeKey = PAGE_SIZES[key] ? key : "A4";
+  const config = PAGE_SIZES[pageSizeKey];
+  document.getElementById("pageSizeRule").textContent = `@page { size: ${config.atPageSize}; }`;
+  document.documentElement.style.setProperty("--sheet-width", config.sheetWidthMm + "mm");
+  document.documentElement.style.setProperty("--page-body-min", (config.printBudgetMm - BODY_RESERVE_MM) + "mm");
+  document.querySelectorAll(".page-size-switch button").forEach(button => {
+    button.classList.toggle("active", button.dataset.size === pageSizeKey);
+  });
+  try { localStorage.setItem(PAGE_SIZE_KEY, pageSizeKey); } catch (error) { /* private browsing */ }
+  renderStatus();
+}
 
 // ------------------------------------------------------------------- helpers
 
@@ -712,13 +812,6 @@ function renderPages() {
   renderStatus();
 }
 
-/**
- * The shortest printable height an A4 sheet gives at a browser's default
- * margins — the tightest printer drivers reserve about 17mm top and bottom.
- * An agenda taller than this runs onto a second sheet.
- */
-const PRINT_BUDGET_MM = 263;
-
 /** How tall the agenda prints: its content, ignoring the preview's own padding. */
 function printedHeightMM(page) {
   const last = page.lastElementChild;
@@ -727,11 +820,13 @@ function printedHeightMM(page) {
   return (last.getBoundingClientRect().bottom - top) * 25.4 / 96;
 }
 
-/** Page count, or a warning when an agenda is too tall to print on one sheet. */
+/** Page count, or a warning when an agenda is too tall to print on one sheet
+ * at the paper size currently selected in the toolbar. */
 function renderStatus() {
+  const budgetMm = PAGE_SIZES[pageSizeKey].printBudgetMm;
   const overfull = [];
   document.querySelectorAll(".page").forEach((page, index) => {
-    const tooTall = printedHeightMM(page) > PRINT_BUDGET_MM;
+    const tooTall = printedHeightMM(page) > budgetMm;
     page.classList.toggle("overfull", tooTall);
     if (tooTall) overfull.push(index + 1);
   });
@@ -891,6 +986,10 @@ function save(text) {
   try { localStorage.setItem(STORAGE_KEY, text); } catch (error) { /* private browsing */ }
 }
 
+// The raw text as of the last apply() — compared against the live textarea to
+// warn before printing something that no longer matches what's on screen.
+let appliedText = null;
+
 /** Parses whatever is in the textarea and redraws the pages. */
 function apply() {
   const text = rawField.value;
@@ -903,8 +1002,63 @@ function apply() {
     rawField.value = serialise(meetings);
   }
   save(rawField.value);
+  appliedText = rawField.value;
   renderPages();
 }
+
+/** True once the textarea has been edited since the agenda below was drawn. */
+function hasUnappliedChanges() {
+  return rawField.value !== appliedText;
+}
+
+const printWarning = document.getElementById("printWarning");
+// Focus returns here on close, so repeatedly pressing Ctrl/Cmd+P doesn't drift
+// focus away from wherever the user was working.
+let printWarningReturnFocus = null;
+
+function showPrintWarning() {
+  printWarningReturnFocus = document.activeElement;
+  printWarning.hidden = false;
+  document.getElementById("printWarnApply").focus();
+}
+
+function hidePrintWarning() {
+  printWarning.hidden = true;
+  (printWarningReturnFocus || rawField).focus();
+  printWarningReturnFocus = null;
+}
+
+/**
+ * Warns before printing a stale agenda — edited raw details that were never
+ * applied wouldn't show up on the printed page at all. Only intercepts the
+ * Print button and Ctrl/Cmd+P; a print triggered from a browser's menu can't
+ * be caught from the page, so it prints without the check.
+ */
+function printWithStaleCheck() {
+  if (hasUnappliedChanges()) {
+    showPrintWarning();
+    return;
+  }
+  window.print();
+}
+
+document.getElementById("printWarnCancel").addEventListener("click", hidePrintWarning);
+document.getElementById("printWarnOk").addEventListener("click", () => {
+  hidePrintWarning();
+  window.print();
+});
+document.getElementById("printWarnApply").addEventListener("click", () => {
+  hidePrintWarning();
+  apply();
+  window.print();
+});
+// Backdrop click, and Escape, both act as Cancel.
+printWarning.addEventListener("click", event => {
+  if (event.target === printWarning) hidePrintWarning();
+});
+window.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !printWarning.hidden) hidePrintWarning();
+});
 
 document.getElementById("apply").addEventListener("click", () => apply());
 
@@ -921,11 +1075,30 @@ document.getElementById("sample").addEventListener("click", () => {
   apply();
 });
 
-document.getElementById("print").addEventListener("click", () => window.print());
+document.getElementById("print").addEventListener("click", printWithStaleCheck);
+
+// Ctrl/Cmd+P goes through the same stale-changes check as the button. This
+// works even while the raw details textarea has focus, since keydown bubbles
+// up to window regardless of what's focused.
+window.addEventListener("keydown", event => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") {
+    event.preventDefault();
+    printWithStaleCheck();
+  }
+});
+
+document.querySelectorAll(".page-size-switch button").forEach(button => {
+  button.addEventListener("click", () => applyPageSize(button.dataset.size));
+});
 
 let saved = null;
-try { saved = localStorage.getItem(STORAGE_KEY); } catch (error) { /* private browsing */ }
+let savedPageSize = null;
+try {
+  saved = localStorage.getItem(STORAGE_KEY);
+  savedPageSize = localStorage.getItem(PAGE_SIZE_KEY);
+} catch (error) { /* private browsing */ }
 rawField.value = saved || "";
+applyPageSize(savedPageSize || "A4");
 apply();
 </script>
 </body>
