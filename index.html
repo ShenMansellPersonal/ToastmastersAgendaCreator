@@ -1,0 +1,932 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Toastmasters Agenda Builder</title>
+<style>
+  /* One point of the A4 page (595 x 842 pt) so every size below can be written
+     in the same points the app's agenda PDF uses. */
+  :root {
+    --pt: 0.3527777mm;
+    --ink: #1b1b1f;
+    --line: #d3d3d8;
+    --panel: #f6f6f8;
+    --accent: #772432;   /* Toastmasters maroon */
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: #e9e9ee;
+    color: var(--ink);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+
+  /* ---------------- Controls ---------------- */
+
+  .toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+    background: #fff;
+    border-bottom: 1px solid var(--line);
+  }
+  .toolbar h1 { font-size: 15px; margin: 0 12px 0 0; }
+  .toolbar .spacer { flex: 1; }
+
+  button, select, input, textarea { font: inherit; color: inherit; }
+
+  button {
+    padding: 5px 11px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    cursor: pointer;
+  }
+  button:hover { background: var(--panel); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.1); }
+
+  .workspace { padding: 16px; }
+
+  .panel {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .panel > h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: #6b6b74;
+    margin: 0 0 8px;
+  }
+
+  textarea#raw {
+    width: 100%;
+    height: 55vh;
+    min-height: 300px;
+    resize: vertical;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre;
+    overflow-wrap: normal;
+    overflow-x: auto;
+    tab-size: 4;
+  }
+  textarea#raw:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  .status { font-size: 12px; color: #6b6b74; }
+  .status.warn { color: #a2331f; font-weight: 600; }
+
+  /* The hint line and the buttons, side by side under the textarea. */
+  .panel-foot {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-top: 8px;
+  }
+  .panel-foot p { margin: 0; flex: 1; }
+  .panel-foot button { flex: none; }
+
+  /* ---------------- The printable agenda page ---------------- */
+
+  #pages { padding: 0 16px 40px; display: flex; flex-direction: column; align-items: center; gap: 20px; }
+  #pages .empty { font-size: 13px; color: #6b6b74; padding: 8px 0 24px; text-align: center; }
+
+  /* At its default margins a browser hands you rather less than a full A4 sheet
+     — roughly 185 x 272mm — so the agenda is built to fit inside that rather than
+     bleeding to the paper's edge. It's 523pt wide (the table's own width) and its
+     height comes from the content: sizing it to the whole sheet is what pushed an
+     empty sliver onto a second page. On screen the 36pt padding draws the paper's
+     white border; in print the browser's margins provide it. */
+  .page {
+    width: 210mm;
+    height: auto;
+    padding: calc(36 * var(--pt));
+    background: #fff;
+    color: #000;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 2px 10px rgba(0,0,0,.25);
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  }
+
+  /* The sized part of the page: the heading, the roles and the no-role/apologies
+     lists. It's 205mm tall whatever the agenda holds, so the no-role and apologies
+     lists finish at the same place every week and the committee below them lands
+     in the same spot. A long agenda grows it rather than being clipped. The
+     committee sits outside it, so the page's total height stays well inside what
+     a printer will give us. */
+  .page-body {
+    min-height: 205mm;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .page-head { display: flex; align-items: flex-start; gap: calc(10 * var(--pt)); }
+  .page-head .titles { flex: 1; min-width: 0; }
+  .page-title { font-size: calc(15 * var(--pt)); font-weight: 700; margin-bottom: calc(11 * var(--pt)); }
+
+  .topfield { display: flex; align-items: baseline; gap: calc(6 * var(--pt)); margin-bottom: calc(3 * var(--pt)); }
+  .topfield .label { font-size: calc(12 * var(--pt)); font-weight: 600; width: calc(56 * var(--pt)); flex: none; }
+  .topfield .value { font-size: calc(12 * var(--pt)); }
+  .attrib {
+    font-size: calc(11 * var(--pt));
+    font-style: italic;
+    text-align: right;
+    padding-right: calc(80 * var(--pt));
+    margin-bottom: calc(6 * var(--pt));
+  }
+  .logo { width: calc(70 * var(--pt)); height: calc(70 * var(--pt)); flex: none; object-fit: contain; }
+
+  .grid {
+    display: grid;
+    grid-template-columns:
+      calc(50 * var(--pt)) calc(170 * var(--pt)) calc(165 * var(--pt))
+      repeat(3, calc(46 * var(--pt)));
+  }
+  .grid .head {
+    font-size: calc(9 * var(--pt));
+    font-weight: 700;
+    padding: calc(3 * var(--pt));
+  }
+  .grid .head.c { text-align: center; }
+  .head-rule { grid-column: 1 / -1; height: calc(0.7 * var(--pt)); background: #000; margin-bottom: calc(2 * var(--pt)); }
+  .break-rule { grid-column: 1 / -1; height: calc(0.5 * var(--pt)); background: rgba(128,128,128,.6); }
+  .break-rule.above { margin: calc(4 * var(--pt)) 0 calc(5 * var(--pt)); }
+  .break-rule.below { margin: calc(5 * var(--pt)) 0 calc(4 * var(--pt)); }
+
+  .grid .cell {
+    font-size: calc(11 * var(--pt));
+    min-height: calc(16 * var(--pt));
+    padding: calc(1.5 * var(--pt)) calc(3 * var(--pt));
+    display: flex;
+    align-items: center;
+  }
+  .grid .cell.c { justify-content: center; }
+  .grid .cell.shade { background: #ebebeb; }
+
+  /* Fills whatever room is left in .page-body, so the lists run down to its
+     bottom edge and the committee starts just below. */
+  .notes { flex: 1 1 auto; display: flex; margin-top: calc(8 * var(--pt)); font-size: calc(10 * var(--pt)); color: #454545; }
+  .notes .col { flex: 1 1 0; min-width: 0; display: flex; gap: calc(4 * var(--pt)); }
+  .notes .col + .col { border-left: calc(0.5 * var(--pt)) solid rgba(128,128,128,.6); padding-left: calc(12 * var(--pt)); }
+  .notes .col:first-child { padding-right: calc(12 * var(--pt)); }
+  .notes .col .tag { flex: none; }
+  .notes .col .names { white-space: pre-wrap; }
+
+  .footer { border-top: calc(0.5 * var(--pt)) solid rgba(128,128,128,.6); padding-top: calc(6 * var(--pt)); }
+  .footer .heading { font-size: calc(10 * var(--pt)); font-weight: 700; margin-bottom: calc(6 * var(--pt)); }
+  .committee {
+    display: grid;
+    grid-template-columns: calc(105 * var(--pt)) calc(140 * var(--pt)) calc(105 * var(--pt)) 1fr;
+    row-gap: calc(2 * var(--pt));
+    font-size: calc(9 * var(--pt));
+  }
+  .committee .role { font-weight: 700; }
+  .mission { font-size: calc(8 * var(--pt)); font-style: italic; color: #808080; margin-top: calc(6 * var(--pt)); }
+
+  /* An agenda with too many roles to fit A4 — outlined on screen only. */
+  @media screen {
+    .page.overfull { outline: 2px solid #a2331f; }
+  }
+
+  /* ---------------- Print ---------------- */
+
+  /* No margin override: the browser's own margins are what frame the agenda, and
+     they're what the page is sized to fit inside. */
+  @page { size: A4; }
+
+  @media print {
+    body { background: #fff; }
+    .noprint { display: none !important; }
+    #pages { padding: 0; gap: 0; }
+    .page {
+      box-shadow: none;
+      /* The same inner width as on screen, with the padding dropped — the
+         browser's margins supply the white border. Height is left to the
+         content: nothing is anchored to the bottom any more, so a fixed height
+         would only add empty space, and any of it past the printable area
+         spills onto a second sheet. */
+      width: calc(523 * var(--pt));
+      height: auto;
+      padding: 0;
+    }
+    /* Break only *between* meetings, so nothing follows the last one. */
+    .page + .page { break-before: page; page-break-before: always; }
+    .grid .cell.shade { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+
+<div class="toolbar noprint">
+  <h1>Toastmasters Agenda Builder</h1>
+  <span class="spacer"></span>
+  <span class="status" id="status"></span>
+  <button id="print" class="primary">Print / Save PDF</button>
+</div>
+
+<div class="workspace noprint">
+  <section class="panel">
+    <h2>Raw details</h2>
+    <textarea id="raw" spellcheck="false"></textarea>
+    <div class="panel-foot">
+      <p class="status">
+        Paste meeting details into the raw details textbox, then apply it to draw the agenda below.
+        Everything is kept in this browser, so a reload picks up where you left off.
+      </p>
+      <button id="sample">Sample agenda</button>
+      <button id="apply" class="primary">Apply raw details ↓</button>
+    </div>
+  </section>
+</div>
+
+<main id="pages"></main>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- club details
+
+// The club name and committee come from the raw details, so any club can use
+// this page. The mission is the standard Toastmasters one — the same everywhere.
+const MISSION = "The mission of a Toastmasters club is to provide a mutually supportive and positive learning environment to develop communication and leadership skills, which in turn foster self-confidence and personal growth.";
+
+
+// The club's built-in roles. green / yellow / red are seconds, matching
+// RoleType.defaultTiming — they fill in any time a raw line leaves out.
+const ROLE_CATALOGUE = [
+  { name: "Sergeant at Arms",                 green: 60,  yellow: 90,  red: 120 },
+  { name: "Toastmaster",                      green: 60,  yellow: 90,  red: 120 },
+  { name: "Grammarian",                       green: 60,  yellow: 120, red: 180 },
+  { name: "Warm Up",                          green: 240, yellow: 300, red: 360, unmanned: true },
+  { name: "Speaker Introduction",             green: 30,  yellow: 45,  red: 60  },
+  { name: "Speaker",                          green: 300, yellow: 360, red: 420 },
+  { name: "Table Topics Master",              green: 60,  yellow: 90,  red: 120 },
+  // The break is timed by its end, not by signals — hence * for green and yellow.
+  { name: "Break",                            green: null, yellow: null, red: 720, unmanned: true },
+  { name: "Speaker Evaluation",               green: 120, yellow: 150, red: 180 },
+  { name: "Table Topics Evaluator",           green: 120, yellow: 150, red: 180 },
+  { name: "Ah-Counter",                       green: 30,  yellow: 60,  red: 90  },
+  { name: "General Evaluator – Functionary",  green: 60,  yellow: 90,  red: 120 },
+  { name: "General Evaluator – Evaluations",  green: 300, yellow: 360, red: 420 },
+  { name: "Timekeeper",                       green: 60,  yellow: 90,  red: 120 },
+  { name: "President's Close",                green: 60,  yellow: 120, red: 180, unmanned: true }
+];
+
+// Role keys used by the app's JSON export, so a pasted export resolves to the
+// same default times when a meeting doesn't override them.
+const ROLE_KEYS = {
+  sergeantAtArms: "Sergeant at Arms",
+  toastmaster: "Toastmaster",
+  warmUp: "Warm Up",
+  grammarian: "Grammarian",
+  ahCounter: "Ah-Counter",
+  speaker: "Speaker",
+  speakerIntroduction: "Speaker Introduction",
+  speakerEvaluation: "Speaker Evaluation",
+  tableTopicsMaster: "Table Topics Master",
+  tableTopicsEvaluator: "Table Topics Evaluator",
+  breakTime: "Break",
+  generalEvaluatorFunctionary: "General Evaluator – Functionary",
+  generalEvaluatorEvaluations: "General Evaluator – Evaluations",
+  timekeeper: "Timekeeper",
+  presidentsClose: "President's Close"
+};
+
+const DEFAULT_START = 19 * 3600 + 15 * 60;   // 7:15 pm
+const STORAGE_KEY = "oaklands-agenda-raw";
+const PAGE_TITLE = document.title;
+
+// ------------------------------------------------------------------- helpers
+
+/** "1:30" → 90, "5" → 300 (whole minutes), "" → null. */
+function parseTime(text) {
+  const value = (text || "").trim();
+  if (!value) return null;
+  if (value.includes(":")) {
+    const [m, s] = value.split(":");
+    return (parseInt(m, 10) || 0) * 60 + (parseInt(s, 10) || 0);
+  }
+  const number = parseFloat(value);
+  return isNaN(number) ? null : Math.round(number * 60);
+}
+
+/**
+ * Reads one of the green/yellow/red cells. A time can be three things:
+ *   "1:30" → 90        a signal time
+ *   "*"    → null      no signal at all (the role doesn't use this light)
+ *   ""     → undefined nothing given, so the club default for the role applies
+ */
+function parseTimeCell(text) {
+  const value = (text || "").trim();
+  if (!value) return undefined;
+  if (/^[*-]+$/.test(value)) return null;
+  return parseTime(value);
+}
+
+/** A cell's value, falling back to the role's default (which may itself be `*`). */
+function timeOr(cell, fallback) {
+  const parsed = parseTimeCell(cell);
+  if (parsed !== undefined) return parsed;
+  return fallback === undefined ? 0 : fallback;
+}
+
+/** 90 → "1:30", and a role with no time for that light → "*" (raw details only). */
+function formatTime(seconds) {
+  if (seconds === null) return "*";
+  const total = Math.max(0, Math.round(seconds || 0));
+  return Math.floor(total / 60) + ":" + String(total % 60).padStart(2, "0");
+}
+
+/** As printed on the agenda, where a starred time is simply left blank. */
+function printedTime(seconds) {
+  return seconds === null ? "" : formatTime(seconds);
+}
+
+/** 19h15 → "7:15" (12-hour, no suffix — as the printed agenda shows it). */
+function clockString(seconds) {
+  const hour = Math.floor(seconds / 3600) % 24;
+  const minute = Math.floor((seconds % 3600) / 60);
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  return hour12 + ":" + String(minute).padStart(2, "0");
+}
+
+/** "7:15 pm", "19:15" or "7.15pm" → seconds since midnight. */
+function parseClock(text) {
+  const value = (text || "").trim().toLowerCase();
+  const match = value.match(/^(\d{1,2})[:.]?(\d{2})?\s*(am|pm)?$/);
+  if (!match) return DEFAULT_START;
+  let hour = parseInt(match[1], 10) || 0;
+  const minute = parseInt(match[2] || "0", 10);
+  const suffix = match[3];
+  if (suffix === "pm" && hour < 12) hour += 12;
+  if (suffix === "am" && hour === 12) hour = 0;
+  // Bare evening times without a suffix ("7:15") are read as pm.
+  if (!suffix && hour < 7) hour += 12;
+  return hour * 3600 + minute * 60;
+}
+
+/** Finds the catalogue entry for a label, ignoring any "#2" instance suffix. */
+function catalogueFor(label) {
+  const base = (label || "").replace(/\s*#\d+\s*$/, "").trim().toLowerCase();
+  return ROLE_CATALOGUE.find(role => role.name.toLowerCase() === base)
+      || ROLE_CATALOGUE.find(role => base.startsWith(role.name.toLowerCase()));
+}
+
+function isBreakLabel(label) {
+  return /^break\b/i.test((label || "").trim());
+}
+
+function splitNames(text) {
+  return (text || "")
+    .split(/[\n,]/)
+    .map(name => name.trim())
+    .filter(Boolean);
+}
+
+const el = (tag, props = {}, children = []) => {
+  const node = Object.assign(document.createElement(tag), props);
+  for (const child of [].concat(children)) {
+    node.append(child instanceof Node ? child : document.createTextNode(child));
+  }
+  return node;
+};
+
+// ------------------------------------------------------------------- the model
+
+/** meetings: [{ date, theme, quote, quoteAuthor, startSeconds, rows, noRole, apologies }] */
+let meetings = [];
+
+function blankMeeting() {
+  return {
+    clubName: "",
+    imageUrl: "",
+    date: "",
+    theme: "",
+    quote: "",
+    quoteAuthor: "",
+    startSeconds: DEFAULT_START,
+    rows: [],
+    noRole: [],
+    apologies: [],
+    committee: []   // [{ role, name }] for the footer
+  };
+}
+
+// ------------------------------------------------------------------- parsing
+
+function parseRaw(text) {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{")) {
+    try { return parseAppJSON(JSON.parse(trimmed)); } catch (error) { /* fall through to text */ }
+  }
+  return trimmed
+    .split(/^\s*-{3,}\s*$/m)
+    .map(parseMeetingBlock)
+    .filter(meeting => meeting.rows.length || meeting.theme || meeting.date);
+}
+
+// Columns come in tab-separated when pasted from the app's Copy button or from a
+// spreadsheet, and pipe-separated when typed by hand. Both are accepted.
+const COLUMN_SPLIT = /\t|\|/;
+
+const FIELD_KEYS = new Set([
+  "club name", "club", "imageurl", "image url", "image", "logo",
+  "date", "theme", "quote", "quote by", "quote author",
+  "start", "no role", "no roles", "apologies", "roles", "committee"
+]);
+
+const CLOCK_CELL = /^\d{1,2}:\d{2}$/;
+
+/**
+ * Reads a line as a header field — "Theme<TAB>Winter Warmers" or the typed
+ * "Theme: Winter Warmers" — returning its key and remaining cells, or null when
+ * the line is something else (an agenda row).
+ */
+function fieldFrom(cells) {
+  if (cells.length > 1) {
+    const key = cells[0].replace(/:$/, "").trim().toLowerCase();
+    return FIELD_KEYS.has(key) ? { key, rest: cells.slice(1) } : null;
+  }
+  const only = cells[0];
+  const bare = only.replace(/:$/, "").trim().toLowerCase();
+  if (FIELD_KEYS.has(bare)) return { key: bare, rest: [] };
+  const keyed = only.match(/^([A-Za-z][A-Za-z ]*?)\s*:\s*(.*)$/);
+  if (keyed) {
+    const key = keyed[1].trim().toLowerCase();
+    if (FIELD_KEYS.has(key)) return { key, rest: [keyed[2].trim()] };
+  }
+  return null;
+}
+
+function parseMeetingBlock(block) {
+  const meeting = blankMeeting();
+  // Which section later "label | value" lines belong to.
+  let section = "";
+
+  for (const rawLine of block.split(/\r?\n/)) {
+    if (!rawLine.trim()) continue;
+    const cells = rawLine.split(COLUMN_SPLIT).map(cell => cell.trim());
+
+    // The agenda table's own heading row, which a paste brings along —
+    // "Role | Member | …", or an older "Start | Role | …".
+    const heading = cells.slice(0, 2).map(cell => cell.toLowerCase()).join("|");
+    if (cells.length > 2 && (heading === "role|member" || heading === "start|role")) {
+      section = "roles";
+      continue;
+    }
+
+    const field = fieldFrom(cells);
+    if (field) {
+      const scalar = field.rest.join(" ").trim();
+      const names = () => splitNames(field.rest.join(", "));
+      section = "";
+      switch (field.key) {
+        case "roles": section = "roles"; break;
+        case "committee": section = "committee"; break;
+        case "club name":
+        case "club": meeting.clubName = scalar; break;
+        case "imageurl":
+        case "image url":
+        case "image":
+        case "logo": meeting.imageUrl = scalar; break;
+        case "date": meeting.date = parseDate(scalar); break;
+        case "theme": meeting.theme = scalar; break;
+        case "quote": meeting.quote = scalar; break;
+        case "quote by":
+        case "quote author": meeting.quoteAuthor = scalar; break;
+        case "start": meeting.startSeconds = parseClock(scalar); break;
+        case "no role":
+        case "no roles": meeting.noRole = names(); break;
+        case "apologies": meeting.apologies = names(); break;
+      }
+      continue;
+    }
+
+    // Under "Committee", a "role | name" pair is a committee member.
+    if (section === "committee" && cells.length > 1) {
+      meeting.committee.push({ role: cells[0], name: cells.slice(1).join(" ").trim() });
+      continue;
+    }
+
+    // Anything else with columns (or sitting under "Roles:") is an agenda row.
+    if (cells.length > 1 || section === "roles") meeting.rows.push(parseRoleLine(cells));
+  }
+  return meeting;
+}
+
+function parseRoleLine(cells) {
+  let parts = cells;
+  // A pasted table keeps its Start column; the clock is recomputed from the
+  // meeting start and the red times, so drop it.
+  if (parts.length >= 3 && CLOCK_CELL.test(parts[0])) parts = parts.slice(1);
+  const label = parts[0] || "";
+  const memberField = parts[1] || "";
+  const role = catalogueFor(label) || {};
+  const unmanned = /^(\*|-{1,2}|unmanned|n\/a|none)$/i.test(memberField)
+    ? true
+    : (memberField ? false : !!role.unmanned);
+  return {
+    label,
+    member: unmanned ? "" : memberField,
+    green: timeOr(parts[2], role.green),
+    yellow: timeOr(parts[3], role.yellow),
+    red: timeOr(parts[4], role.red),
+    unmanned
+  };
+}
+
+/** Accepts 2026-08-03, 3/8/2026 and 3 August 2026. */
+function parseDate(value) {
+  const iso = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) return `${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`;
+  const slashed = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);   // day first
+  if (slashed) return `${slashed[3]}-${slashed[2].padStart(2, "0")}-${slashed[1].padStart(2, "0")}`;
+  const parsed = new Date(value);
+  if (!isNaN(parsed)) {
+    return [parsed.getFullYear(), String(parsed.getMonth() + 1).padStart(2, "0"),
+            String(parsed.getDate()).padStart(2, "0")].join("-");
+  }
+  return "";
+}
+
+/** Reads the app's Meetings JSON export. */
+function parseAppJSON(file) {
+  return (file.meetings || []).map(dto => {
+    const meeting = blankMeeting();
+    meeting.date = parseDate(String(dto.date || "").slice(0, 10));
+    meeting.theme = dto.theme || "";
+    meeting.quote = dto.quote || "";
+    meeting.quoteAuthor = dto.quoteAuthor || "";
+    meeting.apologies = dto.absentees || [];
+    meeting.rows = (dto.assignments || [])
+      .slice()
+      .sort((a, b) => (a.order || 0) - (b.order || 0))
+      .map(item => {
+        const catalogueName = ROLE_KEYS[item.roleKey];
+        const role = catalogueFor(catalogueName || "") || {};
+        const label = item.roleLabel
+          || (catalogueName ? catalogueName + (item.instanceNumber ? " #" + item.instanceNumber : "") : item.roleKey);
+        return {
+          label,
+          member: item.member || "",
+          green: item.green ?? role.green ?? 0,
+          yellow: item.yellow ?? role.yellow ?? 0,
+          red: item.red ?? role.red ?? 0,
+          unmanned: !item.member && !!role.unmanned
+        };
+      });
+    return meeting;
+  });
+}
+
+// ------------------------------------------------------------------ serialising
+
+/**
+ * Writes the meetings back out in the raw format, columns padded so they line
+ * up. Only used after a JSON paste, to turn the export into editable text.
+ */
+function serialise(list) {
+  return list.map(meeting => {
+    const widthLabel = Math.max(10, ...meeting.rows.map(row => row.label.length));
+    const widthMember = Math.max(6, ...meeting.rows.map(row => (row.unmanned ? 1 : row.member.length)));
+    // Same running order as the app's Copy button: date, the roles people work
+    // on, the roster lists, then the meeting's own details and the committee.
+    const lines = ["Date: " + meeting.date, "", "Roles:"];
+    for (const row of meeting.rows) {
+      lines.push([
+        row.label.padEnd(widthLabel),
+        (row.unmanned ? "*" : row.member).padEnd(widthMember),
+        formatTime(row.green).padStart(5),
+        formatTime(row.yellow).padStart(5),
+        formatTime(row.red).padStart(5)
+      ].join(" | "));
+    }
+    lines.push("", "No role: " + meeting.noRole.join(", "), "Apologies: " + meeting.apologies.join(", "));
+    lines.push(
+      "",
+      "Club name: " + meeting.clubName,
+      "imageUrl: " + meeting.imageUrl,
+      "Theme: " + meeting.theme,
+      "Quote: " + meeting.quote,
+      "Quote by: " + meeting.quoteAuthor,
+      "Start: " + clockString(meeting.startSeconds) + (meeting.startSeconds >= 12 * 3600 ? " pm" : " am")
+    );
+
+    if (meeting.committee.length) {
+      const widthRole = Math.max(10, ...meeting.committee.map(member => member.role.length));
+      lines.push("", "Committee:");
+      for (const member of meeting.committee) {
+        lines.push(member.role.padEnd(widthRole) + " | " + member.name);
+      }
+    }
+    return lines.join("\n");
+  }).join("\n\n---\n\n") + "\n";
+}
+
+// ------------------------------------------------------------------- agenda maths
+
+/**
+ * How long a role holds the floor: its longest signal time, usually red. A role
+ * whose times are all "*" takes no time at all, so the next one starts with it —
+ * useful for a line that's announced rather than timed.
+ */
+function roleDuration(row) {
+  const times = [row.green, row.yellow, row.red].filter(time => typeof time === "number");
+  return times.length ? Math.max(...times) : 0;
+}
+
+/**
+ * Start time for each row: the meeting start, advanced by each role's duration,
+ * plus a minute of breathing room for every completed 10 minutes of content.
+ */
+function startTimes(rows, startSeconds) {
+  let clock = startSeconds;
+  let elapsed = 0;
+  let buffers = 0;
+  return rows.map(row => {
+    const start = clock;
+    const duration = roleDuration(row);
+    clock += duration;
+    elapsed += duration;
+    const due = Math.floor(elapsed / 600);
+    if (due > buffers) {
+      clock += (due - buffers) * 60;
+      buffers = due;
+    }
+    return start;
+  });
+}
+
+function formatDate(iso) {
+  if (!iso) return "";
+  const [year, month, day] = iso.split("-").map(Number);
+  const date = new Date(year, (month || 1) - 1, day || 1);
+  if (isNaN(date)) return iso;
+  return date.toLocaleDateString("en-NZ", {
+    weekday: "long", day: "numeric", month: "long", year: "numeric"
+  });
+}
+
+// --------------------------------------------------------------- page rendering
+
+/**
+ * "<club name>-<yyyymmdd>-agenda" — the document title, which is what a browser
+ * offers as the filename when saving as PDF. It has to be set as the agenda is
+ * drawn rather than at print time: Chrome and Safari read the title when the
+ * print preview opens, before `beforeprint` fires, so changing it there is too
+ * late and you get the page's own name instead.
+ */
+function agendaFilename() {
+  const meeting = meetings[0];
+  if (!meeting) return PAGE_TITLE;
+  const parts = [meeting.clubName, meeting.date.replace(/-/g, ""), "agenda"].filter(Boolean);
+  // Characters a file name can't carry.
+  return parts.join("-").replace(/[\\/:*?"<>|]/g, "-") || PAGE_TITLE;
+}
+
+function renderPages() {
+  const host = document.getElementById("pages");
+  host.textContent = "";
+  document.title = agendaFilename();
+  if (!meetings.length) {
+    host.append(el("p", { className: "empty noprint" },
+      "Nothing to show yet — paste a meeting from the app's Copy button, or press “Sample agenda”."));
+  }
+  for (const meeting of meetings) host.append(renderPage(meeting));
+  renderStatus();
+}
+
+/**
+ * The shortest printable height an A4 sheet gives at a browser's default
+ * margins — the tightest printer drivers reserve about 17mm top and bottom.
+ * An agenda taller than this runs onto a second sheet.
+ */
+const PRINT_BUDGET_MM = 263;
+
+/** How tall the agenda prints: its content, ignoring the preview's own padding. */
+function printedHeightMM(page) {
+  const last = page.lastElementChild;
+  if (!last) return 0;
+  const top = page.getBoundingClientRect().top + parseFloat(getComputedStyle(page).paddingTop);
+  return (last.getBoundingClientRect().bottom - top) * 25.4 / 96;
+}
+
+/** Page count, or a warning when an agenda is too tall to print on one sheet. */
+function renderStatus() {
+  const overfull = [];
+  document.querySelectorAll(".page").forEach((page, index) => {
+    const tooTall = printedHeightMM(page) > PRINT_BUDGET_MM;
+    page.classList.toggle("overfull", tooTall);
+    if (tooTall) overfull.push(index + 1);
+  });
+  const status = document.getElementById("status");
+  status.classList.toggle("warn", overfull.length > 0);
+  status.textContent = overfull.length
+    ? "⚠ too many roles to fit page " + overfull.join(", ")
+    : meetings.length ? meetings.length + (meetings.length === 1 ? " page" : " pages") : "";
+}
+
+function renderPage(meeting) {
+  const page = el("section", { className: "page" });
+
+  // Header: title, theme / quote / attribution, logo.
+  const titles = el("div", { className: "titles" }, [
+    el("div", { className: "page-title" },
+      [meeting.clubName, formatDate(meeting.date)].filter(Boolean).join(" - ")),
+    el("div", { className: "topfield" }, [
+      el("span", { className: "label" }, "Theme :"),
+      el("span", { className: "value" }, meeting.theme)
+    ]),
+    el("div", { className: "topfield" }, [
+      el("span", { className: "label" }, "Quote :"),
+      el("span", { className: "value" }, meeting.quote)
+    ])
+  ]);
+  const head = el("div", { className: "page-head" }, [titles]);
+  // The club's logo is fetched from the URL in the raw details, so the page
+  // carries no image of its own — it does need a connection to show it.
+  if (meeting.imageUrl) {
+    head.append(el("img", {
+      className: "logo", src: meeting.imageUrl, alt: "", referrerPolicy: "no-referrer"
+    }));
+  }
+  // The heading, roles and lists share a fixed-height region; the committee
+  // follows it rather than sitting inside it.
+  const body = el("div", { className: "page-body" });
+  page.append(body);
+  body.append(head);
+  body.append(el("div", { className: "attrib" },
+    "Quote by : " + (meeting.quoteAuthor || "")));
+
+  // Roles grid.
+  const grid = el("div", { className: "grid" });
+  const headings = [["Start", ""], ["Role", ""], ["Member", ""], ["Green", "c"], ["Yellow", "c"], ["Red", "c"]];
+  for (const [text, extra] of headings) grid.append(el("div", { className: "head " + extra }, text));
+  grid.append(el("div", { className: "head-rule" }));
+
+  // Every line typed in the raw details prints, assigned or not.
+  const rows = meeting.rows;
+  const starts = startTimes(rows, meeting.startSeconds);
+  rows.forEach((row, index) => {
+    const isBreak = isBreakLabel(row.label);
+    if (isBreak) grid.append(el("div", { className: "break-rule above" }));
+    const shade = index % 2 === 0 ? " shade" : "";
+    const cells = [
+      [clockString(starts[index]), ""],
+      [row.label, ""],
+      [row.unmanned ? "" : row.member, ""],
+      [printedTime(row.green), "c"],
+      [printedTime(row.yellow), "c"],
+      [printedTime(row.red), "c"]
+    ];
+    for (const [text, extra] of cells) {
+      grid.append(el("div", { className: "cell " + extra + shade }, text));
+    }
+    if (isBreak) grid.append(el("div", { className: "break-rule below" }));
+  });
+  body.append(grid);
+
+  // No role / apologies, side by side with a divider. These fill the rest of the
+  // sized region, so they end where the committee begins.
+  body.append(el("div", { className: "notes" }, [
+    el("div", { className: "col" }, [
+      el("span", { className: "tag" }, "No role:"),
+      el("span", { className: "names" }, meeting.noRole.join(", "))
+    ]),
+    el("div", { className: "col" }, [
+      el("span", { className: "tag" }, "Apologies:"),
+      el("span", { className: "names" }, meeting.apologies.join(", "))
+    ])
+  ]));
+
+  // Committee footer, from the raw details — two side-by-side columns.
+  const footer = el("div", { className: "footer" });
+  if (meeting.committee.length) {
+    footer.append(el("div", { className: "heading" },
+      [meeting.clubName, "Committee"].filter(Boolean).join(" ")));
+    const committee = el("div", { className: "committee" });
+    const half = Math.ceil(meeting.committee.length / 2);
+    for (let r = 0; r < half; r++) {
+      for (const member of [meeting.committee[r], meeting.committee[r + half]]) {
+        committee.append(
+          el("div", { className: "role" }, member ? member.role : ""),
+          el("div", {}, member ? member.name : "")
+        );
+      }
+    }
+    footer.append(committee);
+  }
+  footer.append(el("div", { className: "mission" }, MISSION));
+  page.append(footer);
+
+  return page;
+}
+
+// ------------------------------------------------------------------- the sample
+
+const SAMPLE = `Date: 2026-08-03
+
+Roles:
+Sergeant at Arms                | Priya Nair     |  1:00 |  1:30 |  2:00
+Toastmaster                     | Jordan Blake   |  1:00 |  1:30 |  2:00
+Grammarian                      | Dana Whitfield |  1:00 |  2:00 |  3:00
+Warm Up                         | *              |  4:00 |  5:00 |  6:00
+Speaker Introduction #1         | Morgan Lee     |  0:30 |  0:45 |  1:00
+Speaker #1                      | Sam Okafor     |  5:00 |  6:00 |  7:00
+Speaker Introduction #2         | Noah Bennett   |  0:30 |  0:45 |  1:00
+Speaker #2                      | Riley Chen     |  5:00 |  6:00 |  7:00
+Table Topics Master             | Alex Rivera    |  1:00 |  1:30 |  2:00
+Break                           | *              |     * |     * | 12:00
+Toastmaster                     | Jordan Blake   |  1:00 |  1:30 |  2:00
+Speaker Evaluation #1           | Casey Nolan    |  2:00 |  2:30 |  3:00
+Speaker Evaluation #2           | Noah Bennett   |  2:00 |  2:30 |  3:00
+Table Topics Evaluator #1       | Ellie Marsh    |  2:00 |  2:30 |  3:00
+Ah-Counter                      |                |  0:30 |  1:00 |  1:30
+General Evaluator - Evaluations | Casey Nolan    |  5:00 |  6:00 |  7:00
+Timekeeper                      | Morgan Lee     |  1:00 |  1:30 |  2:00
+President's Close               | *              |  1:00 |  2:00 |  3:00
+
+No role: Tom Halloway, Zoe Carter
+Apologies: Ravi Deshmukh
+
+Club name: Riverside Toastmasters
+imageUrl: https://upload.wikimedia.org/wikipedia/en/0/05/Toastmasters_2011.png
+Theme: New Horizons
+Quote: Courage is what it takes to stand up and speak.
+Quote by: Winston Churchill
+Start: 7:15 pm
+
+Committee:
+President          | Priya Nair
+VP Membership      | Alex Rivera
+VP Education       | Jordan Blake
+VP Public Relations| Dana Whitfield
+Treasurer          | Morgan Lee
+Secretary          | Ellie Marsh
+Sergeant at Arms   | Casey Nolan
+Previous President | Noah Bennett
+`;
+
+// ------------------------------------------------------------------- wiring up
+
+const rawField = document.getElementById("raw");
+
+function save(text) {
+  try { localStorage.setItem(STORAGE_KEY, text); } catch (error) { /* private browsing */ }
+}
+
+/** Parses whatever is in the textarea and redraws the pages. */
+function apply() {
+  const text = rawField.value;
+  meetings = parseRaw(text);
+  // A paste — tab-separated columns from the app or a spreadsheet, or a JSON
+  // export — is tidied into the aligned format below, which is easier to read
+  // and edit here. Text typed by hand is left exactly as typed.
+  const wasPasted = text.includes("\t") || text.trim().startsWith("{");
+  if (wasPasted && meetings.length) {
+    rawField.value = serialise(meetings);
+  }
+  save(rawField.value);
+  renderPages();
+}
+
+document.getElementById("apply").addEventListener("click", () => apply());
+
+rawField.addEventListener("input", () => save(rawField.value));
+rawField.addEventListener("keydown", event => {
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    apply();
+  }
+});
+
+document.getElementById("sample").addEventListener("click", () => {
+  rawField.value = SAMPLE;
+  apply();
+});
+
+document.getElementById("print").addEventListener("click", () => window.print());
+
+let saved = null;
+try { saved = localStorage.getItem(STORAGE_KEY); } catch (error) { /* private browsing */ }
+rawField.value = saved || "";
+apply();
+</script>
+</body>
+</html>
