@@ -165,7 +165,15 @@
     display: flex;
     flex-direction: column;
     box-shadow: 0 2px 10px rgba(0,0,0,.25);
-    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    /* Named outright rather than left to the system UI font: -apple-system gives
+       San Francisco on a Mac and Segoe UI on Windows, whose digits are different
+       widths, so the same agenda came out laid out differently — and a time that
+       fits one can be cut off in the other. Arial ships with both macOS and
+       Windows, and Liberation Sans is its metric-identical stand-in on Linux, so
+       every machine measures the columns the same way. Nothing is fetched: a
+       webfont would be a prettier answer but leaves the agenda depending on a
+       connection at the moment someone prints it. */
+    font-family: Arial, "Liberation Sans", "Helvetica Neue", Helvetica, sans-serif;
   }
 
   /* The sized part of the page: the heading, the roles and the no-role/apologies
@@ -222,6 +230,11 @@
     align-items: center;
   }
   .grid .cell.c { justify-content: center; }
+  /* The time columns are the narrowest on the page and their contents are
+     centred, so the cell padding buys nothing there — dropped to leave a long
+     time ("28:00", or anything past the hour) as much room as possible before
+     fitTimeCells has to shrink it. */
+  .grid .cell.time { padding-left: calc(1 * var(--pt)); padding-right: calc(1 * var(--pt)); white-space: nowrap; }
   .grid .cell.shade { background: #ebebeb; }
 
   /* Fills whatever room is left in .page-body, so the lists run down to its
@@ -808,8 +821,51 @@ function renderPages() {
     host.append(el("p", { className: "empty noprint" },
       "Nothing to show yet — paste a meeting from the app's Copy button, or press “Sample agenda”."));
   }
-  for (const meeting of meetings) host.append(renderPage(meeting));
+  for (const meeting of meetings) {
+    const page = renderPage(meeting);
+    host.append(page);
+    // Measured once the page is in the document, so the cells have a width.
+    fitTimeCells(page);
+  }
   renderStatus();
+}
+
+/** A time that still doesn't fit at this fraction of the cell's font is clipped
+ * rather than shrunk any further — past here it's too small to read anyway. */
+const MIN_TIME_SCALE = 0.65;
+
+/**
+ * The Start and Green/Yellow/Red columns are a fixed width, so a long time —
+ * a 24:00 speech, or anything at all past an hour — can run into the column
+ * beside it, which is what cuts them off on paper. The font is stepped down
+ * just enough for the widest one on the page to fit.
+ *
+ * The scale is worked out per column group rather than per cell: shrinking only
+ * the one long cell would leave the printed column in two different sizes, and
+ * a whole column set a point smaller reads as deliberate.
+ */
+function fitTimeCells(page) {
+  for (const group of ["start", "signal"]) {
+    const cells = page.querySelectorAll(".grid .cell.time." + group);
+    if (!cells.length) continue;
+    let scale = 1;
+    const range = document.createRange();
+    for (const cell of cells) {
+      if (!cell.textContent.trim()) continue;
+      const style = getComputedStyle(cell);
+      // The room the text actually has: the cell less its own left/right padding,
+      // and a hair off that so a printer's slightly wider digits still fit.
+      const room = cell.clientWidth
+        - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 1;
+      range.selectNodeContents(cell);
+      const width = range.getBoundingClientRect().width;
+      if (width > room && room > 0) scale = Math.min(scale, room / width);
+    }
+    if (scale === 1) continue;
+    const base = parseFloat(getComputedStyle(cells[0]).fontSize);
+    const size = (base * Math.max(scale, MIN_TIME_SCALE)).toFixed(2) + "px";
+    for (const cell of cells) cell.style.fontSize = size;
+  }
 }
 
 /** How tall the agenda prints: its content, ignoring the preview's own padding. */
@@ -883,12 +939,12 @@ function renderPage(meeting) {
     if (isBreak) grid.append(el("div", { className: "break-rule above" }));
     const shade = index % 2 === 0 ? " shade" : "";
     const cells = [
-      [clockString(starts[index]), ""],
+      [clockString(starts[index]), "time start"],
       [row.label, ""],
       [row.unmanned ? "" : row.member, ""],
-      [printedTime(row.green), "c"],
-      [printedTime(row.yellow), "c"],
-      [printedTime(row.red), "c"]
+      [printedTime(row.green), "c time signal"],
+      [printedTime(row.yellow), "c time signal"],
+      [printedTime(row.red), "c time signal"]
     ];
     for (const [text, extra] of cells) {
       grid.append(el("div", { className: "cell " + extra + shade }, text));
