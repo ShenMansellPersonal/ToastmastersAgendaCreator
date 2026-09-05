@@ -204,6 +204,9 @@
     margin-bottom: calc(6 * var(--pt));
   }
   .logo { width: calc(70 * var(--pt)); height: calc(70 * var(--pt)); flex: none; object-fit: contain; }
+  /* No attribution to print, so the heading runs straight into the roles — this
+     stands in for the space .attrib's own margin would have left. */
+  .page-head + .grid { margin-top: calc(9 * var(--pt)); }
 
   .grid {
     display: grid;
@@ -427,6 +430,12 @@ function applyPageSize(key) {
 
 // ------------------------------------------------------------------- helpers
 
+/** A yes/no field. Anything but an outright yes — including a missing line — is
+ * a no, so a club that never set it gets the quieter page. */
+function parseFlag(text) {
+  return /^(true|yes|y|1|on)$/i.test((text || "").trim());
+}
+
 /** "1:30" → 90, "5" → 300 (whole minutes), "" → null. */
 function parseTime(text) {
   const value = (text || "").trim();
@@ -533,6 +542,9 @@ function blankMeeting() {
     theme: "",
     quote: "",
     quoteAuthor: "",
+    // Off unless the raw details ask for it: not every club prints the mission
+    // statement, and it's the one line here that isn't about the meeting.
+    motto: false,
     startSeconds: DEFAULT_START,
     rows: [],
     noRole: [],
@@ -560,7 +572,7 @@ const COLUMN_SPLIT = /\t|\|/;
 
 const FIELD_KEYS = new Set([
   "club name", "club", "imageurl", "image url", "image", "logo",
-  "date", "theme", "quote", "quote by", "quote author",
+  "date", "theme", "quote", "quote by", "quote author", "motto",
   "start", "no role", "no roles", "apologies", "roles", "committee"
 ]);
 
@@ -623,6 +635,7 @@ function parseMeetingBlock(block) {
         case "quote": meeting.quote = scalar; break;
         case "quote by":
         case "quote author": meeting.quoteAuthor = scalar; break;
+        case "motto": meeting.motto = parseFlag(scalar); break;
         case "start": meeting.startSeconds = parseClock(scalar); break;
         case "no role":
         case "no roles": meeting.noRole = names(); break;
@@ -738,6 +751,7 @@ function serialise(list) {
       "Theme: " + meeting.theme,
       "Quote: " + meeting.quote,
       "Quote by: " + meeting.quoteAuthor,
+      "motto: " + meeting.motto,
       "Start: " + clockString(meeting.startSeconds) + (meeting.startSeconds >= 12 * 3600 ? " pm" : " am")
     );
 
@@ -899,16 +913,17 @@ function renderPage(meeting) {
   // Header: title, theme / quote / attribution, logo.
   const titles = el("div", { className: "titles" }, [
     el("div", { className: "page-title" },
-      [meeting.clubName, formatDate(meeting.date)].filter(Boolean).join(" - ")),
-    el("div", { className: "topfield" }, [
-      el("span", { className: "label" }, "Theme :"),
-      el("span", { className: "value" }, meeting.theme)
-    ]),
-    el("div", { className: "topfield" }, [
-      el("span", { className: "label" }, "Quote :"),
-      el("span", { className: "value" }, meeting.quote)
-    ])
+      [meeting.clubName, formatDate(meeting.date)].filter(Boolean).join(" - "))
   ]);
+  // Only the fields the raw details actually fill: a label with nothing after it
+  // reads as something missing rather than something left out.
+  for (const [label, value] of [["Theme :", meeting.theme], ["Quote :", meeting.quote]]) {
+    if (!value) continue;
+    titles.append(el("div", { className: "topfield" }, [
+      el("span", { className: "label" }, label),
+      el("span", { className: "value" }, value)
+    ]));
+  }
   const head = el("div", { className: "page-head" }, [titles]);
   // The club's logo is fetched from the URL in the raw details, so the page
   // carries no image of its own — it does need a connection to show it.
@@ -922,8 +937,11 @@ function renderPage(meeting) {
   const body = el("div", { className: "page-body" });
   page.append(body);
   body.append(head);
-  body.append(el("div", { className: "attrib" },
-    "Quote by : " + (meeting.quoteAuthor || "")));
+  // Only when the raw details name one — an agenda with no attribution shouldn't
+  // print a dangling "Quote by :" with nothing after it.
+  if (meeting.quoteAuthor) {
+    body.append(el("div", { className: "attrib" }, "Quote by : " + meeting.quoteAuthor));
+  }
 
   // Roles grid.
   const grid = el("div", { className: "grid" });
@@ -983,8 +1001,10 @@ function renderPage(meeting) {
     }
     footer.append(committee);
   }
-  footer.append(el("div", { className: "mission" }, MISSION));
-  page.append(footer);
+  if (meeting.motto) footer.append(el("div", { className: "mission" }, MISSION));
+  // With neither a committee nor the motto there's nothing to rule off, and an
+  // empty .footer would still draw its top border across the foot of the page.
+  if (footer.firstChild) page.append(footer);
 
   return page;
 }
@@ -1021,6 +1041,7 @@ imageUrl: https://upload.wikimedia.org/wikipedia/en/0/05/Toastmasters_2011.png
 Theme: New Horizons
 Quote: Courage is what it takes to stand up and speak.
 Quote by: Winston Churchill
+motto: true
 Start: 7:15 pm
 
 Committee:
